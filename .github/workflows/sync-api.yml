@@ -1,0 +1,46 @@
+# 旧版本启动器（v0.3.3 及以前）只会请求 pcl.pw.zhuzhi.site/api/v1/update.json。
+# 这里的接口文件要和主仓库保持一致，否则 nightly 的下载地址过期后旧版本更新会 404。
+# 主仓库的 CI 没有权限推送到这个仓库，所以由这里定时从主仓库的 site 分支拉取。
+name: Sync update API
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+
+concurrency:
+  group: sync-api
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          base=https://raw.githubusercontent.com/zhuzhi-09/PixelWorld/site/docs/api/v1
+          for f in update.json notices.json; do
+            # 下载失败或内容不是有效的接口文件时保留原来的，不覆盖
+            if curl -fsSL --retry 3 --max-time 30 "$base/$f" -o "api/v1/$f.new" &&
+              python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["format"] == 1' "api/v1/$f.new"; then
+              mv "api/v1/$f.new" "api/v1/$f"
+            else
+              rm -f "api/v1/$f.new"
+              echo "::warning::$f 同步失败，保留原来的文件"
+            fi
+          done
+          git add api/v1
+          if git diff --cached --quiet; then exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "同步更新接口"
+          git push
+          # 用 GITHUB_TOKEN 推送不一定触发 Pages 构建，主动请求一次
+          gh api -X POST "repos/$GITHUB_REPOSITORY/pages/builds" >/dev/null || true
